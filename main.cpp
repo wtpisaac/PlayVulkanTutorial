@@ -133,8 +133,10 @@ private:
     VkQueue presentQueue;
     VkSwapchainKHR swapChain;
     std::vector<VkImage> swapChainImages;
+    std::vector<VkImageView> swapChainImageViews;
     VkFormat swapChainImageFormat;
     VkExtent2D swapChainExtent;
+
 
     void initWindow() {
         assert(glfwInit() == GLFW_TRUE);
@@ -702,6 +704,48 @@ private:
         swapChainExtent = extent;
     }
 
+    void createImageViews() {
+        swapChainImageViews.resize(swapChainImages.size());
+        for(size_t i = 0; i < swapChainImages.size(); i++) {
+            VkImageViewCreateInfo createInfo {
+                .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+                .image = swapChainImages[i],
+                // use 2D texture and swapchain format
+                .viewType = VK_IMAGE_VIEW_TYPE_2D,
+                .format = swapChainImageFormat,
+                // default "swizzle" (swapping color channels) config
+                .components = VkComponentMapping {
+                    .r = VK_COMPONENT_SWIZZLE_IDENTITY,
+                    .g = VK_COMPONENT_SWIZZLE_IDENTITY,
+                    .b = VK_COMPONENT_SWIZZLE_IDENTITY,
+                    .a = VK_COMPONENT_SWIZZLE_IDENTITY
+                },
+                // subresource configuration describes part of image and purpose
+                // use these images as color target without mipmap or layering
+                .subresourceRange = VkImageSubresourceRange {
+                    .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+                    .baseMipLevel = 0,
+                    .levelCount = 1,
+                    .baseArrayLayer = 0,
+                    // stereo 3D would use swapchain with multiple layers
+                    // with multiple image views for left and right eyes for 
+                    // different layers
+                    .layerCount = 1
+                }
+            };
+
+            VkResult result = vkCreateImageView(
+                device, 
+                &createInfo, 
+                nullptr, 
+                &swapChainImageViews[i]
+            );
+            if(result != VK_SUCCESS) {
+                throw std::runtime_error("failed to create image view");
+            }
+        };
+    }
+
     void initVulkan() {
         createInstance();
         setupDebugMessenger();
@@ -709,6 +753,7 @@ private:
         pickPhysicalDevice();
         createLogicalDevice();
         createSwapChain();
+        createImageViews();
     }
 
     void populateDebugMessengerCreateInfo(VkDebugUtilsMessengerCreateInfoEXT& createInfo) {
@@ -746,6 +791,14 @@ private:
 
     void cleanup() {
         // MARK: Vulkan deinstantiation
+        // We are responsible for removing image views
+        for(VkImageView imageView: swapChainImageViews) {
+            vkDestroyImageView(
+                device, 
+                imageView, 
+                nullptr
+            );
+        }
         vkDestroySwapchainKHR(
             device,
             swapChain,
