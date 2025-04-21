@@ -1,4 +1,5 @@
 #include <algorithm>
+#include <cstddef>
 #include <cstdint>
 #include <cstring>
 #include <limits>
@@ -162,6 +163,7 @@ private:
 
     VkPipeline graphicsPipeline;
 
+    std::vector<VkFramebuffer> swapChainFrameBuffers;
 
     void initWindow() {
         assert(glfwInit() == GLFW_TRUE);
@@ -1185,6 +1187,38 @@ private:
         createImageViews();
         createRenderPass();
         createGraphicsPipeline();
+        createFramebuffers();
+    }
+
+    void createFramebuffers() {
+        // MARK: Frame buffer creation
+        swapChainFrameBuffers.resize(swapChainImageViews.size());
+
+        for(size_t i = 0; i<swapChainImageViews.size(); i++) {
+            VkImageView attachments = {
+                swapChainImageViews[i]
+            };
+
+            VkFramebufferCreateInfo framebufferInfo {
+                .sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO,
+                .renderPass = renderPass,
+                .attachmentCount = 1,
+                .pAttachments = &attachments,
+                .width = swapChainExtent.width,
+                .height = swapChainExtent.height,
+                .layers = 1
+            };
+
+            VkResult createFramebufferResult = vkCreateFramebuffer(
+                device,
+                &framebufferInfo,
+                nullptr,
+                &swapChainFrameBuffers[i]
+            );
+            if(createFramebufferResult != VK_SUCCESS) {
+                throw std::runtime_error("could not create framebuffer!");
+            }
+        }
     }
 
     /*
@@ -1350,6 +1384,14 @@ private:
 
     void cleanup() {
         // MARK: Vulkan deinstantiation
+        // Destroy framebuffers after we are finished rendering
+        for(VkFramebuffer frameBuffer : swapChainFrameBuffers) {
+            vkDestroyFramebuffer(
+                device,
+                frameBuffer,
+                nullptr
+            );
+        }
         // Clean up pipeline. Should only be done at end of program as it is 
         // needed for all drawing operations.
         vkDestroyPipeline(
