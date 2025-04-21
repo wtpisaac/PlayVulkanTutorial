@@ -1,5 +1,6 @@
 # Play_Vulkan_Tutorial
-Going through the Vulkan tutorial at https://vulkan-tutorial.com and annotating
+Going through the Vulkan tutorial at
+https://docs.vulkan.org/tutorial/latest/00_Introduction.html and annotating
 their source code with notes. My goal is to learn Vulkan to begin real work on
 the voxel engine prototype.
 
