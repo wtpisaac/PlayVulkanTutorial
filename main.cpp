@@ -157,6 +157,7 @@ private:
     VkExtent2D swapChainExtent;
 
     // TODO: Implement uniforms
+    VkRenderPass renderPass;
     VkPipelineLayout pipelineLayout;
 
 
@@ -1135,6 +1136,133 @@ private:
         createSwapChain();
         createImageViews();
         createGraphicsPipeline();
+        createRenderPass();
+    }
+
+    /*
+        Render pass instructs Vulkan about framebuffer attachments
+        How many depth, color buffers there are, sample count for each,
+        how their contents should be handled through render operations.
+    */
+    void createRenderPass() {
+        // MARK: Attachment Description
+        VkAttachmentDescription colorAttachment {
+            .format = swapChainImageFormat,
+            // Use one sample - no multisampling being used
+            .samples = VK_SAMPLE_COUNT_1_BIT,
+
+            /*
+                Set load and store operations.
+                Load options
+                Load -> Preserve existing attachment contents
+                Clear -> Clear framebuffer values to zero at start
+                Load Don't Care -> Existing contents undefined, don't care
+
+                Store operations
+                Store -> Rendered contents stored in memory, may be read later
+                Don't Care -> Contents will be undefined after rendering
+
+                We want to clear before the frame begins, and afterwards
+                store (in order to see the output)
+            */
+            .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
+            .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
+
+            // Not using stencil so ignore
+            .stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
+            .stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
+
+            /*
+                Images are stored in some particular layout in VkImages, but
+                the in-memory layout may change depending on the operations.
+
+                Common layouts:
+                COLOR_ATTACHMENT_OPTIONAL -> Image used as color attachment
+                PRESENT_SRC_KHR -> Images are to be presented in swap chain
+                TRANSFER_DST_OPTIMAL -> Images used as destination for memory 
+                copy op
+
+                Images need to be transitioned to specific layouts for the
+                operations thye will be used with.
+
+                initialLayout specifies what layout the image has before the 
+                render pass begins. In this case, we use
+                VK_IMAGE_LAYOUT_UNDEFINED as we do not care what the existing
+                layout is. (With this mode contents not guaranteed stored;
+                this is OK because we clear it)
+
+                finalLayout specifies the layout to transition to when the
+                render pass is complete. We want the image to be presentable
+                to swap chain so choose VK_IMAGE_LAYOUT_PRESENT_SRC_KHR.
+            */
+            .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+            .finalLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR
+        };
+
+        // MARK: Subpasses and Attachment References
+        /*
+            Single render pass may have multiple subpasses, in order to do some
+            rendering operations in sequence which depend on prior rendering
+            of the frame. Vulkan may optimize if you use this approach instead
+            of several render passes.
+
+            We are only performing a single render pass in this run.
+
+            Subpasses reference color attachments, and we need to create
+            those references.
+        */
+        VkAttachmentReference colorAttachmentRef {
+            /*
+                Attachment parameter specifies index in attachment descriptions
+                array to reference. 
+            */
+            .attachment = 0,
+            /* 
+                Layout specifies the desired layout the attachment should have
+                during subpass using this reference. Vulkan automatically
+                transitions attachment to this when subpass started.
+                We intend to use color attachment as color buffer so we use 
+                COLOR_ATTACHMENT_OPTIONAL
+            */
+            .layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL
+        };
+
+        /*
+            Next we define the subpass itself
+        */
+        VkSubpassDescription subpass {
+            // Compute subpasses not currently supported (?) but may be in
+            // future. Thus we specify graphics.
+            // TODO: Has this been added since writing of this tutorial?
+            .pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS,
+            
+            // Define color attachment
+            .colorAttachmentCount = 1,
+            .pColorAttachments = &colorAttachmentRef
+            /*
+                The layout(location = 0) out vec4 outColor
+                referers to THIS INDEX in the attachment reference.
+            */
+        };
+
+        VkRenderPassCreateInfo renderPassInfo {
+            .sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO,
+            .attachmentCount = 1,
+            .pAttachments = &colorAttachment,
+            .subpassCount = 1,
+            .pSubpasses = &subpass
+        };
+
+        // NOTE: Must clean up render pass
+        VkResult createRenderPassResult = vkCreateRenderPass(
+            device,
+            &renderPassInfo,
+            nullptr,
+            &renderPass
+        );
+        if(createRenderPassResult != VK_SUCCESS) {
+            throw std::runtime_error("failed to create render pass!");
+        }
     }
 
     void populateDebugMessengerCreateInfo(VkDebugUtilsMessengerCreateInfoEXT& createInfo) {
@@ -1176,6 +1304,13 @@ private:
         vkDestroyPipelineLayout(
             device, 
             pipelineLayout, 
+            nullptr
+        );
+
+        // Clean up render pass
+        vkDestroyRenderPass(
+            device, 
+            renderPass, 
             nullptr
         );
 
