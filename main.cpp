@@ -160,6 +160,8 @@ private:
     VkRenderPass renderPass;
     VkPipelineLayout pipelineLayout;
 
+    VkPipeline graphicsPipeline;
+
 
     void initWindow() {
         assert(glfwInit() == GLFW_TRUE);
@@ -1114,6 +1116,52 @@ private:
             throw std::runtime_error("failed to create pipeline layout!");
         }
 
+        // MARK: Graphics pipeline creation
+        VkGraphicsPipelineCreateInfo pipelineInfo {
+            .sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO,
+            .stageCount = 2,
+            .pStages = shaderStages,
+
+            // Input piopeline shader stage structs
+            .pVertexInputState = &vertexInputInfo,
+            .pInputAssemblyState = &inputAssembly,
+            .pViewportState = &viewportState,
+            .pRasterizationState = &rasterizerCreateInfo,
+            .pMultisampleState = &multisampling,
+            .pDepthStencilState = nullptr, // depth test disabled
+            .pColorBlendState = &colorBlending,
+            .pDynamicState = &dynamicState,
+
+            // then fixed function
+            .layout = pipelineLayout,
+
+            // then pipeline layout (Vulkan handle rather than struct pointer)
+            .renderPass = renderPass,
+            .subpass = 0,
+
+            /*
+                We can derive pipelines if we share a lot of functionality in 
+                common. Right now we only have one pipeline, so this is 
+                not needed. These values only used if 
+                VK_PIPELINE_CREATE_DERIVATIVE_IT is set in info.
+                below for reference
+            */
+            .basePipelineHandle = VK_NULL_HANDLE,
+            .basePipelineIndex = -1
+        };
+
+        VkResult createPipelineResult = vkCreateGraphicsPipelines(
+            device,
+            VK_NULL_HANDLE,
+            1,
+            &pipelineInfo,
+            nullptr,
+            &graphicsPipeline
+        );
+        if(createPipelineResult != VK_SUCCESS) {
+            throw std::runtime_error("Could not create graphics pipeline!");
+        }
+
         // clean up shader modules after creating pipeline
         vkDestroyShaderModule(
             device, 
@@ -1135,8 +1183,8 @@ private:
         createLogicalDevice();
         createSwapChain();
         createImageViews();
-        createGraphicsPipeline();
         createRenderPass();
+        createGraphicsPipeline();
     }
 
     /*
@@ -1145,6 +1193,8 @@ private:
         how their contents should be handled through render operations.
     */
     void createRenderPass() {
+        std::cout << "Creating render pass" << std::endl;
+
         // MARK: Attachment Description
         VkAttachmentDescription colorAttachment {
             .format = swapChainImageFormat,
@@ -1300,6 +1350,14 @@ private:
 
     void cleanup() {
         // MARK: Vulkan deinstantiation
+        // Clean up pipeline. Should only be done at end of program as it is 
+        // needed for all drawing operations.
+        vkDestroyPipeline(
+            device,
+            graphicsPipeline,
+            nullptr
+        );
+
         // Clean up pipeline layout (uniforms)
         vkDestroyPipelineLayout(
             device, 
