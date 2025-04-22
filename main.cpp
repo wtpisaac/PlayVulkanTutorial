@@ -167,6 +167,10 @@ private:
     VkCommandPool commandPool;
     VkCommandBuffer commandBuffer;
 
+    VkSemaphore imageAvailableSemaphore;
+    VkSemaphore renderFinishedSemaphore;
+    VkFence inFlightFence;
+
     void initWindow() {
         assert(glfwInit() == GLFW_TRUE);
 
@@ -1192,6 +1196,54 @@ private:
         createFramebuffers();
         createCommandPool();
         createCommandBuffer();
+        createSyncObjects();
+    }
+
+    // MARK: Synchronization
+
+    void createSyncObjects() {
+        // REMARK: Must clean these up!
+        VkSemaphoreCreateInfo semaphoreInfo {
+            .sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO
+        };
+
+        VkFenceCreateInfo fenceInfo {
+            .sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO,
+            // ! Must set fence signaled to be able to wait on first frame
+            // ! for it.
+            .flags = VK_FENCE_CREATE_SIGNALED_BIT
+        };
+
+        VkResult result;
+        result = vkCreateSemaphore(
+            device,
+            &semaphoreInfo,
+            nullptr,
+            &imageAvailableSemaphore
+        );
+        if(result != VK_SUCCESS) {
+            throw std::runtime_error("could not create image available semaphore");
+        }
+
+        result = vkCreateSemaphore(
+            device,
+            &semaphoreInfo,
+            nullptr,
+            &renderFinishedSemaphore
+        );
+        if(result != VK_SUCCESS) {
+            throw std::runtime_error("could not create render finished semaphore");
+        }
+
+        result = vkCreateFence(
+            device,
+            &fenceInfo,
+            nullptr,
+            &inFlightFence
+        );
+        if(result != VK_SUCCESS) {
+            throw std::runtime_error("could not create in flight fence");
+        }
     }
 
     void recordCommandBuffer(
@@ -1538,12 +1590,53 @@ private:
             */
         };
 
+        // MARK: Subpass dependencies
+        /*
+            Subpass dependencies control memory and execution dependencies
+            between subpasses. 
+
+            We only have one subpass, but preceding and following actions
+            count as implicit subpasses. 
+
+            Right now transition occurs at start of pipeline, but we do not 
+            yet have the image. So we make the render pass wait for the
+            color attachment, using subpass dependencies.
+        */
+        VkSubpassDependency dependency {
+            /*
+                VK_SUBPASS_EXTERNAL -> implicit subpass before or after render
+                pass
+
+                0 -> refers to the only subpass we have
+
+                dstSubpass must be greater than srcSubpass - cycles not allowed
+                other than EXTERNAL
+            */
+            .srcSubpass = VK_SUBPASS_EXTERNAL,
+            .dstSubpass = 0,
+
+            /*
+                Specify operations to wait on. We need to wait on the swap
+                chain image, so we wait on the color attachment stage.
+            */
+            .srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+                        /*
+                The color attachment stage should wait for this, including
+                for writing.
+            */
+            .dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+            .srcAccessMask = 0,
+            .dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT
+        };
+
         VkRenderPassCreateInfo renderPassInfo {
             .sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO,
             .attachmentCount = 1,
             .pAttachments = &colorAttachment,
             .subpassCount = 1,
-            .pSubpasses = &subpass
+            .pSubpasses = &subpass,
+            .dependencyCount = 1,
+            .pDependencies = &dependency
         };
 
         // NOTE: Must clean up render pass
@@ -1584,15 +1677,180 @@ private:
         }
     }
 
+    // MARK: Main loop
     void mainLoop() {
         while(!glfwWindowShouldClose(window)) {
             // process events (including window close)
             glfwPollEvents();
+            drawFrame();
+        }
+
+        /*
+            Wait for any executions which have been started to finish.
+
+            Recall: drawFrame operations to GPU are asynchronous.
+        */
+        vkDeviceWaitIdle(device);
+    }
+
+    // MARK: Frame rendering
+    void drawFrame() {
+        /*
+            Rendering frame in Vulkan requires:
+            - Waitiung for prior frame
+            - Acquiring swapchain image
+            - Recording command buffer for scene onto image
+            - Submitting recorded command buffer
+            - Presenting swapchain image
+
+            ! MARK: Synchronization
+            All events need to be explicitly synchronized and ordered by the 
+            programmer.
+
+            Tools include:
+            - Semaphore -> can be signaled or waited, on the GPU.
+            - Fence -> Ordered operations on the CPU, e.g., save screenshot
+            GPU data via CPU to memory. (Avoid where possible; keep GPU and
+            host working, avoid waiting)
+
+            In our tutorial, we use a semaphore for the stages, but a fence
+            to wait for render to prevent double-rendering.
+        */
+
+        // Wait for previous frame to complete
+        // Relies on initial condition of fence being signaled.
+        vkWaitForFences(
+            device,
+            1,
+            &inFlightFence,
+            VK_TRUE,
+            UINT64_MAX
+        );
+
+        // Manually reset fence to unsignaled state once signaled
+        vkResetFences(
+            device,
+            1,
+            &inFlightFence
+        );
+
+        // Need to acquire an image from the swap chain
+        uint32_t imageIndex;
+        vkAcquireNextImageKHR(
+            device,
+            swapChain,
+            UINT64_MAX,
+            imageAvailableSemaphore,
+            VK_NULL_HANDLE,
+            &imageIndex
+        );
+
+        // Now with the image index to the swap chain image, we can record
+        // the command buffer. Reset to ensure it's recordable (it may be
+        // in completed state)
+        vkResetCommandBuffer(
+            commandBuffer,
+            // We do not want to do anything special with the reset, so specify
+            // empty flags.
+            0
+        );
+
+        recordCommandBuffer(
+            commandBuffer,
+            imageIndex
+        );
+
+        // Now with recorded command buffer, we can send it here
+        VkSemaphore waitSemaphores[] = { imageAvailableSemaphore };
+        // Signal render finished when we finish rendering
+        VkSemaphore signalSemaphores[] = { renderFinishedSemaphore };
+        /*
+            Wait on writing colors to image until available.
+            Theoretically an implementation could already start executing shaders
+            without available image.
+        */
+        VkPipelineStageFlags waitStages[] = { VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT };
+        VkSubmitInfo submitInfo {
+            .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+            .waitSemaphoreCount = 1,
+            .pWaitSemaphores = waitSemaphores,
+            .pWaitDstStageMask = waitStages,
+
+            /*
+                Specify command buffer.
+            */
+            .commandBufferCount = 1,
+            .pCommandBuffers = &commandBuffer,
+
+            /*
+                Specify semaphores to signal on finished execution
+            */
+            .signalSemaphoreCount = 1,
+            .pSignalSemaphores = signalSemaphores
+        };
+
+        VkResult submitQueueResult = vkQueueSubmit(
+            graphicsQueue,
+            1,
+            &submitInfo,
+            inFlightFence
+        );
+        if(submitQueueResult != VK_SUCCESS) {
+            throw std::runtime_error("failed to draw command buffer!");
+        }
+
+        VkSwapchainKHR swapChains[] = { swapChain };
+
+        VkPresentInfoKHR presentInfo {
+            .sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
+            // We wait for command buffer to finish exec via signal semaphores
+            .waitSemaphoreCount = 1,
+            .pWaitSemaphores = signalSemaphores,
+            /*
+                pResults allows you to check if swap chain presentation was
+                successful. We can use return value given we are only presenting
+                one.
+            */
+
+            /*
+                Specify swapchains to render to.
+            */
+            .swapchainCount = 1,
+            .pSwapchains = swapChains,
+            .pImageIndices = &imageIndex,
+
+            // optional for reference
+            .pResults = nullptr
+        };
+
+        VkResult result = vkQueuePresentKHR(
+            graphicsQueue,
+            &presentInfo
+        );
+        if(result != VK_SUCCESS) {
+            throw std::runtime_error("could not present");
         }
     }
 
     void cleanup() {
         // MARK: Vulkan deinstantiation
+        // Must clean up synchronization primitives
+        vkDestroySemaphore(
+            device,
+            imageAvailableSemaphore,
+            nullptr
+        );
+        vkDestroySemaphore(
+            device,
+            renderFinishedSemaphore,
+            nullptr
+        );
+        vkDestroyFence(
+            device,
+            inFlightFence,
+            nullptr
+        );
+
         vkDestroyCommandPool(
             device,
             commandPool,
